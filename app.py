@@ -42,22 +42,38 @@ def upload_file_stream(stream, filename, folder_id):
     return res.json()["metadata"][0]["fileid"]
 
 def download_audio_stream(url):
+    buffer = BytesIO()
+
     ydl_opts = {
         'format': 'bestaudio[ext=m4a]/bestaudio',
+        'outtmpl': '-',  # No file output path
         'quiet': True,
-        'outtmpl': '-',
+        'noplaylist': True,
+        'prefer_ffmpeg': False,  # Don't require ffmpeg
+        'postprocessors': [],    # No conversion
+        'logtostderr': False,
+        'cachedir': False,
+        'logger': None,
+        'progress_hooks': [lambda d: None],
+        'outtmpl': {
+            'default': '%(title).100s.%(ext)s'
+        },
     }
-    buffer = BytesIO()
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        result = ydl.extract_info(url, download=False)
-        title = sanitize_title(result['title'])
-        audio_url = result['url']
-        resp = requests.get(audio_url, stream=True)
-        if resp.status_code != 200:
-            raise Exception("Failed to download audio.")
-        for chunk in resp.iter_content(8192):
-            buffer.write(chunk)
+        info = ydl.extract_info(url, download=False)
+        title = sanitize_title(info["title"])
+        ext = info["ext"] or "m4a"
+
+        # Actually download the file
+        ydl.download([url])
+
+        # Use `info['requested_downloads'][0]['filepath']` to open the saved temp file
+        filepath = info["requested_downloads"][0]["filepath"]
+        with open(filepath, "rb") as f:
+            buffer.write(f.read())
         buffer.seek(0)
+
     return buffer, title, extract_video_id(url)
 
 def download_thumbnail_stream(video_id):
