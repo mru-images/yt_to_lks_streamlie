@@ -3,7 +3,7 @@ import requests
 import json
 import re
 from io import BytesIO
-from supabase import create_client, Client
+from supabase import create_client
 
 # --- 🔐 HARDCODED CREDENTIALS (for testing only) ---
 PCLOUD_AUTH_TOKEN = "fE93KkZMjhg7ZtHMudQY9CHj5m8MDH3CFxLEKsw1y"
@@ -16,7 +16,7 @@ RAPIDAPI_KEY = "0204f09445msh6e8d74df8ff070bp1b4c6ejsn8a38abc65dfc"
 SONGS_FOLDER = "songs_test"
 IMGS_FOLDER = "imgs_test"
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- Utility Functions ---
 def extract_video_id(url: str):
