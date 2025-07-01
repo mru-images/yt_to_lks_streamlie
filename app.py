@@ -1,60 +1,29 @@
 import streamlit as st
-import os, requests, json, re
+import yt_dlp
+import requests
+import re
+import json
 from io import BytesIO
-from yt_dlp import YoutubeDL
 from supabase import create_client, Client
 
-# --- 🔐 HARDCODED CREDENTIALS ---
+# 🔐 Hardcoded credentials
 PCLOUD_AUTH_TOKEN = "fE93KkZMjhg7ZtHMudQY9CHj5m8MDH3CFxLEKsw1y"
 SUPABASE_URL = "https://yssrurhhizdcmctxrxec.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlzc3J1cmhoaXpkY21jdHhyeGVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTEyOTUzNTUsImV4cCI6MjA2Njg3MTM1NX0.h3x6OjrCWKaKR7CHNfA7dl_bnmmMj6AmmNWhWW6mpo4"
 GEMINI_API_KEY = "AIzaSyCGcpIzYiPhFIB8YiQtZNmGYTUtXQCFOoE"
 
-SONGS_FOLDER = "songs_test"
-IMGS_FOLDER = "imgs_test"
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-# --- UTILS ---
-def sanitize_title(title: str):
-    return re.sub(r'[\\/*?:"<>|#]', '', title).strip()[:100]
+# Utility functions
+def sanitize_title(title):
+    return re.sub(r'[\\/*?:"<>|#]', "", title).strip()[:100]
 
 def extract_video_id(url):
     if "youtu.be/" in url:
-        return url.split("youtu.be/")[-1].split("?")[0]
+        return url.split("youtu.be/")[-1]
     elif "watch?v=" in url:
-        return url.split("watch?v=")[-1].split("&")[0]
-    else:
-        raise ValueError("Invalid YouTube URL")
-
-def download_mp3_stream(url):
-    ydl_opts = {
-        'format': 'bestaudio/best',
-        'quiet': True,
-        'outtmpl': '-',
-        'postprocessors': [{
-            'key': 'FFmpegExtractAudio',
-            'preferredcodec': 'mp3',
-        }],
-        'prefer_ffmpeg': True,
-    }
-    buffer = BytesIO()
-    with YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(url, download=False)
-        title = sanitize_title(info.get("title", "downloaded_song"))
-        stream_url = info["url"]
-        r = requests.get(stream_url, stream=True)
-        for chunk in r.iter_content(8192):
-            buffer.write(chunk)
-        buffer.seek(0)
-    return buffer, title
-
-def download_thumbnail_stream(video_id):
-    for q in ["maxresdefault", "hqdefault", "mqdefault", "default"]:
-        url = f"https://img.youtube.com/vi/{video_id}/{q}.jpg"
-        res = requests.get(url)
-        if res.status_code == 200:
-            return BytesIO(res.content)
-    raise Exception("Thumbnail not found")
+        return url.split("watch?v=")[-1]
+    raise ValueError("Invalid YouTube URL")
 
 def get_or_create_folder(folder_name):
     res = requests.get("https://api.pcloud.com/listfolder", params={"auth": PCLOUD_AUTH_TOKEN, "folderid": 0})
@@ -64,33 +33,64 @@ def get_or_create_folder(folder_name):
     res = requests.get("https://api.pcloud.com/createfolder", params={"auth": PCLOUD_AUTH_TOKEN, "name": folder_name, "folderid": 0})
     return res.json()["metadata"]["folderid"]
 
-def upload_file_stream(file_stream, filename, folder_id):
+def upload_file_stream(stream, filename, folder_id):
     res = requests.post(
         "https://api.pcloud.com/uploadfile",
         params={"auth": PCLOUD_AUTH_TOKEN, "folderid": folder_id},
-        files={"file": (filename, file_stream)}
+        files={"file": (filename, stream)}
     )
     return res.json()["metadata"][0]["fileid"]
 
-def get_tags_from_gemini(song_name):
-    PREDEFINED_TAGS = {
-        "genre": ["pop", "rock", "hiphop", "rap", "r&b"],
-        "mood": ["happy", "sad", "romantic", "chill", "energetic"],
-        "occasion": ["party", "study", "sleep"],
-        "era": ["2000s", "2010s", "2020s"],
-        "vocal_instrument": ["female_vocals", "male_vocals", "instrumental_only"]
+def download_audio_stream(url):
+    ydl_opts = {
+        'format': 'bestaudio[ext=m4a]/bestaudio',
+        'quiet': True,
+        'outtmpl': '-',
     }
+    buffer = BytesIO()
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        result = ydl.extract_info(url, download=False)
+        title = sanitize_title(result['title'])
+        audio_url = result['url']
+        resp = requests.get(audio_url, stream=True)
+        if resp.status_code != 200:
+            raise Exception("Failed to download audio.")
+        for chunk in resp.iter_content(8192):
+            buffer.write(chunk)
+        buffer.seek(0)
+    return buffer, title, extract_video_id(url)
+
+def download_thumbnail_stream(video_id):
+    for q in ["maxresdefault", "hqdefault", "mqdefault", "default"]:
+        url = f"https://img.youtube.com/vi/{video_id}/{q}.jpg"
+        r = requests.get(url)
+        if r.status_code == 200:
+            return BytesIO(r.content)
+    raise Exception("Thumbnail not found.")
+
+def get_tags_from_gemini(song_name):
+    TAG_CATEGORIES = {
+        "genre": ["pop", "rock", "hiphop", "rap", "edm", "classical", "folk"],
+        "mood": ["happy", "sad", "chill", "energetic"],
+        "occasion": ["party", "study", "sleep", "wedding"],
+        "era": ["2020s", "2010s", "2000s", "90s"],
+        "vocal_instrument": ["male_vocals", "female_vocals", "instrumental"]
+    }
+
     prompt = f"""
-Given the song name "{song_name}", identify its primary artist and language.
-Then, suggest tags from these predefined categories only.
-Format:
+Given the song name "{song_name}", identify its artist and language.
+Then suggest tags from ONLY the predefined list below.
+Return JSON format like:
 {{
-  "artist": "...", "language": "...",
-  "genre": [...], "mood": [...],
-  "occasion": [...], "era": [...], "vocal_instrument": [...]
+  "artist": "Artist Name",
+  "language": "Language",
+  "genre": [...],
+  "mood": [...],
+  "occasion": [...],
+  "era": [...],
+  "vocal_instrument": [...]
 }}
-Predefined:
-{json.dumps(PREDEFINED_TAGS, indent=2)}
+Predefined tags: {json.dumps(TAG_CATEGORIES)}
 """
     res = requests.post(
         f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}",
@@ -101,49 +101,50 @@ Predefined:
     if text.startswith("```json"):
         text = text.strip("` \n").replace("json", "", 1).strip()
     parsed = json.loads(text)
-    tags = []
-    for k in ["genre", "mood", "occasion", "era", "vocal_instrument"]:
-        tags += parsed.get(k, [])
+    all_tags = sum([parsed.get(k, []) for k in TAG_CATEGORIES], [])
     return {
         "artist": parsed.get("artist", "Unknown"),
         "language": parsed.get("language", "english"),
-        "tags": tags
+        "tags": all_tags
     }
 
-# --- STREAMLIT APP ---
-st.title("🎵 YouTube to pCloud Music Uploader")
+# Streamlit UI
+st.title("🎵 YouTube Audio to pCloud + Supabase")
+yt_url = st.text_input("Enter YouTube URL")
 
-url = st.text_input("Enter YouTube URL:")
-
-if st.button("Process"):
+if st.button("Process") and yt_url:
     try:
-        with st.spinner("Downloading..."):
-            video_id = extract_video_id(url)
-            mp3_stream, title = download_mp3_stream(url)
-            thumb_stream = download_thumbnail_stream(video_id)
+        st.info("Downloading audio...")
+        audio_stream, title, vid_id = download_audio_stream(yt_url)
 
-        with st.spinner("Uploading..."):
-            song_folder_id = get_or_create_folder(SONGS_FOLDER)
-            img_folder_id = get_or_create_folder(IMGS_FOLDER)
-            file_id = upload_file_stream(mp3_stream, f"{title}.mp3", song_folder_id)
-            img_id = upload_file_stream(thumb_stream, f"{title}.jpg", img_folder_id)
+        st.info("Downloading thumbnail...")
+        thumb_stream = download_thumbnail_stream(vid_id)
 
-        with st.spinner("Publishing..."):
-            meta = get_tags_from_gemini(title)
-            supabase.table("songs").insert({
-                "file_id": file_id,
-                "img_id": img_id,
-                "name": title,
-                "artist": meta["artist"],
-                "language": meta["language"],
-                "tags": meta["tags"],
-                "views": 0,
-                "likes": 0
-            }).execute()
+        st.info("Uploading to pCloud...")
+        song_folder = get_or_create_folder("songs_streamlit")
+        img_folder = get_or_create_folder("imgs_streamlit")
+        file_id = upload_file_stream(audio_stream, f"{title}.m4a", song_folder)
+        img_id = upload_file_stream(thumb_stream, f"{title}.jpg", img_folder)
 
-        st.success("✅ Song uploaded and inserted successfully!")
-        st.write("**Title:**", title)
-        st.write("**Artist:**", meta["artist"])
-        st.write("**Tags:**", meta["tags"])
+        st.info("Getting metadata from Gemini...")
+        meta = get_tags_from_gemini(title)
+
+        st.info("Inserting into Supabase...")
+        supabase.table("songs").insert({
+            "file_id": file_id,
+            "img_id": img_id,
+            "name": title,
+            "artist": meta["artist"],
+            "language": meta["language"],
+            "tags": meta["tags"],
+            "views": 0,
+            "likes": 0
+        }).execute()
+
+        st.success(f"✅ Uploaded: {title}")
+        st.write(f"**Artist:** {meta['artist']}")
+        st.write(f"**Language:** {meta['language']}")
+        st.write(f"**Tags:** {meta['tags']}")
+
     except Exception as e:
-        st.error(f"❌ Error: {e}")
+        st.error(f"❌ Error: {str(e)}")
